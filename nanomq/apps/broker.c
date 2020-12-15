@@ -116,7 +116,7 @@ server_cb(void *arg)
 				work->state = RECV;
 				nng_msg_free(msg);
 				work->msg = NULL;
-				nng_aio_abort(work->aio, 31);
+				nng_aio_abort(work->aio, 31);		//TOBE removed fix
 				nng_ctx_recv(work->ctx, work->aio);
 				break;
 			}
@@ -127,8 +127,8 @@ server_cb(void *arg)
 			          (char *) nng_msg_body(work->msg), nng_msg_cmd_type(work->msg));
 			//nng_sleep_aio(200, work->aio);
             //nng_aio_finish_error(work->aio, 0);       //TODO reduce waiting time.
-            //nng_aio_finish(work->aio, 0);
-            nng_aio_finish_sync(work->aio, 0);
+            nng_aio_finish(work->aio, 0);
+            //nng_aio_finish_sync(work->aio, 0);
 			break;
 		case WAIT:
 			debug_msg("WAIT ^^^^^^^^^^^^^^^^^^^^^ ctx%d ^^^^", work->ctx.id);

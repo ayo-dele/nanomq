@@ -213,6 +213,8 @@ nano_ctx_send(void *arg, nni_aio *aio)
 	int        rv;
 	size_t     len;
 	uint32_t   pipe, i;
+	int kick = 0;
+	bool start = false;
 	//uint32_t   p_id[2],i = 0,fail_count = 0, need_resend = 0;
 
 	msg = nni_aio_get_msg(aio);
@@ -252,7 +254,9 @@ nano_ctx_send(void *arg, nni_aio *aio)
 
     if (nni_msg_cmd_type(msg) == CMD_PUBLISH) {
 			i = 0;
-            debug_msg("pipe in queue is %d of %d", pipes[i], aio->pipe_len);
+			kick = 0;
+			start = false;
+            debug_msg("pipe in queue is %d of %d", &pipes[i], aio->pipe_len);
             while (i < aio->pipe_len) {
 				if ((p = nni_id_get(&s->pipes, pipes[i])) == NULL) {
 					debug_msg("Warning: Pub pipe is gone!");
@@ -276,8 +280,8 @@ nano_ctx_send(void *arg, nni_aio *aio)
 					}
 					nni_lmq_putq(&p->qlmq, msg);
         		}
-				debug_msg("11111111111111 %p", p);
-				if (p->busy) {
+				if (p->busy || nni_lmq_len(&p->rlmq) > 1 || nni_aio_result(&p->aio_send) != 0) {
+					//printf("put it into rlmq %ld %p\n", nni_lmq_len(&p->rlmq), &p->rlmq);
 					if (nni_lmq_full(&p->rlmq)) {
 						// Make space for the new message.
 						nni_msg *old;
@@ -285,18 +289,23 @@ nano_ctx_send(void *arg, nni_aio *aio)
 						nni_msg_free(old);
 					}
 					nni_lmq_putq(&p->rlmq, msg);
-				} else {
+				//} else if (nni_lmq_len(&p->rlmq) == 0 && nni_aio_result(&p->aio_send) == 0 && !nni_aio_list_active(&p->aio_send)){
+				} else if (nni_lmq_len(&p->rlmq) == 0){
 					p->busy = true;
             		nni_aio_set_msg(&p->aio_send, msg);
-            		nni_pipe_send(p->pipe, &p->aio_send); 
+					printf("using aio: %p len %ld \n", &p->aio_send, nni_lmq_len(&p->rlmq));
+            		nni_pipe_send(p->pipe, &p->aio_send);
+					//kick++;
+					//start = true;
 				}
             	i++;
             }
-            nni_mtx_unlock(&s->lk);
-            nng_msg_free(msg);
+			nng_msg_free(msg);
             nni_aio_set_msg(aio, NULL);
 			debug_msg("ctx send over");
             nni_aio_finish(aio, 0, len);
+            nni_mtx_unlock(&s->lk);
+
             return;
     }
 
@@ -312,15 +321,17 @@ nano_ctx_send(void *arg, nni_aio *aio)
 		return;
 	}
 	p->tree = nni_aio_get_dbtree(aio);
-	if (!p->busy) {
+	//if (!p->busy && !nni_aio_list_active(&p->aio_send) && nni_lmq_len(&p->rlmq) == 0 && nni_aio_result(&p->aio_send) == 0) {
+	if (!p->busy && nni_lmq_len(&p->rlmq) == 0) {
 		p->busy = true;
 		len     = nni_msg_len(msg);
 		nni_aio_set_msg(&p->aio_send, msg);
 		nni_pipe_send(p->pipe, &p->aio_send);
+				nni_aio_set_msg(aio, NULL);
+		nni_aio_finish(aio, 0, len);
 		nni_mtx_unlock(&s->lk);
 
-		nni_aio_set_msg(aio, NULL);
-		nni_aio_finish(aio, 0, len);
+
 		return;
 	}
 
@@ -330,7 +341,6 @@ nano_ctx_send(void *arg, nni_aio *aio)
 		return;
 	}
 	debug_msg("ERROR: pipe %d jamed! resending in cb!", pipe);
-    printf("ERROR: pipe %d jamed! resending in cb!\n", pipe);
 					if (nni_lmq_full(&p->rlmq)) {
 						// Make space for the new message.
 						nni_msg *old;
@@ -593,6 +603,7 @@ nano_pipe_close(void *arg)
 	nni_mtx_unlock(&s->lk);
 }
 
+//option 1 resend with ctx 2 resend with rlmq 3 divided 4 only send when lmq is empty
 static void
 nano_pipe_send_cb(void *arg)
 {
@@ -615,6 +626,21 @@ nano_pipe_send_cb(void *arg)
 	}
 	nni_mtx_lock(&s->lk);
 	p->busy = false;
+
+	//printf("before : rlmq msg resending! %ld %p \n", nni_lmq_len(&p->rlmq), &p->rlmq);
+	if (nni_lmq_getq(&p->rlmq, &msg) == 0) {
+        p->busy    = true;
+        len        = nni_msg_len(msg);
+		nni_aio_set_msg(&p->aio_send, msg);
+        //nni_msg_clone(msg);
+        //printf("Warning: rlmq msg resending! %ld\n", nni_lmq_len(&p->rlmq));
+		nni_pipe_send(p->pipe, &p->aio_send);
+        //nni_aio_finish_sync(aio, 0, len);
+		nni_mtx_unlock(&s->lk);
+		return;
+	} else {
+		p->busy = false;
+	}
 
 	if ((ctx = nni_list_first(&p->sendq)) == NULL) {
         //check qos msg then
@@ -646,7 +672,7 @@ nano_pipe_send_cb(void *arg)
 
 	nni_mtx_unlock(&s->lk);
 
-	nni_aio_finish_sync(aio, 0, len);
+	nni_aio_finish(aio, 0, len);
     debug_msg("nano_pipe_send_cb: end of republish ctx : %p", ctx);
     return;
 qos:
@@ -664,7 +690,6 @@ qos:
         p->qos_retry = 0;
 	}
     nni_mtx_unlock(&s->lk);
-    printf("resend!\n");
     debug_msg("nano_pipe_send_cb: end of qos logic ctx : %p", ctx);
     return;
 	/*
@@ -846,7 +871,6 @@ nano_pipe_recv_cb(void *arg)
 			break;
 		case CMD_PINGREQ:
 			p->ka_refresh = true;
-			printf("PINGGREQ!\n");
 			break;
         case CMD_PUBACK:
             debug_msg("puback received!");
@@ -906,7 +930,6 @@ nano_pipe_recv_cb(void *arg)
 		nni_pollable_raise(&s->readable);
 		nni_mtx_unlock(&s->lk);
 		debug_msg("ERROR: no ctx found!! create more ctxs!");
-		printf("ERROR: no ctx found!! create more ctxs!\n");
 		return;
 	}
 
@@ -929,7 +952,7 @@ nano_pipe_recv_cb(void *arg)
 
 	nni_aio_set_msg(aio, msg);
 	//trigger application level
-	nni_aio_finish_sync(aio, 0, nni_msg_len(msg));
+	nni_aio_finish(aio, 0, nni_msg_len(msg));
 	debug_msg("end of nano_pipe_recv_cb %p", ctx);
 	return;
 

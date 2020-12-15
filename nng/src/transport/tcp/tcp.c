@@ -352,7 +352,6 @@ tcptran_pipe_send_cb(void *arg)
 
 	nni_mtx_lock(&p->mtx);
 	aio = nni_list_first(&p->sendq);
-	//nni_list_remove(&p->sendq, aio);
 
 	debug_msg("############### tcptran_pipe_send_cb ################");
 	/**/
@@ -391,11 +390,10 @@ tcptran_pipe_send_cb(void *arg)
 	msg = nni_aio_get_msg(aio);
 	n   = nni_msg_len(msg);
 	nni_pipe_bump_tx(p->npipe, n);
-	nni_mtx_unlock(&p->mtx);
-
 	nni_aio_set_msg(aio, NULL);
 	nni_msg_free(msg);
-	nni_aio_finish_sync(aio, 0, n);
+	nni_aio_finish(aio, 0, n);
+	nni_mtx_unlock(&p->mtx);
 }
 
 /*
@@ -572,7 +570,7 @@ tcptran_pipe_recv_cb(void *arg)
 
 	nni_aio_set_msg(aio, msg);
 	// finish IO expose msg to EMQ_NANO protocl level
-	nni_aio_finish_sync(aio, 0, n);
+	nni_aio_finish(aio, 0, n);
 	debug_msg("end of tcptran_pipe_recv_cb: synch! %p\n", p);
 	return;
 
@@ -710,6 +708,7 @@ tcptran_pipe_send(void *arg, nni_aio *aio)
 		nni_aio_finish_error(aio, rv);
 		return;
 	}
+	printf("appending aio %p\n", aio);
 	nni_list_append(&p->sendq, aio);
 	if (nni_list_first(&p->sendq) == aio) {
 		tcptran_pipe_send_start(p);

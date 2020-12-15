@@ -441,6 +441,7 @@ nni_aio_list_append(nni_list *list, nni_aio *aio)
 void
 nni_aio_list_remove(nni_aio *aio)
 {
+	printf("nni_aio_list_remove hereeeeee %p\n", aio);
 	nni_list_node_remove(&aio->a_prov_node);
 }
 
